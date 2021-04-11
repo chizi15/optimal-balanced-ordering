@@ -12,6 +12,8 @@ def opt_baln_order(df_all):
 
     if df_all.isna().any().any():
         raise Exception('原数据中含有空值，请检查')
+    df_all = pd.concat([df_all, pd.DataFrame(columns=list('ABC'))]).fillna(0)
+    df_all.rename(columns={"A": "最终订货量", "B": "最终订货件数", 'C': '最终周转天数'}, inplace=True)
     for i in range(len(set(df_all['供应商']))):
         df_ori = df_all[df_all['供应商'] == list(set(df_all['供应商']))[i]]
         df = df_ori.copy()  # 使用copy方法另存一份df，否则df会和df_ori使用同一个存储地址
@@ -155,8 +157,11 @@ def opt_baln_order(df_all):
                   '进行补货量追加的单品，所需增量的精确值:', '\n', order_delta, '\n', '进行补货量追加的单品的最终补货件数:',  '\n', final_unit, '\n',
                   '该供应商下所有单品的最终补货量：', '\n', order_ori, '\n', '该供应商下所有单品的最终补货件数：', '\n', alr_uni, '\n',
                   '总订货件数:', total_unit, '\n')
+            T_final = (df['当前库存'] + df['在途库存'] + order_ori) / df['日均销量']
             for _ in order_ori.index:
-                df_all['计算订货量'][df_all['计算订货量'].index == _] = order_ori[order_ori.index == _]
+                df_all['最终订货量'][df_all['最终订货量'].index == _] = order_ori[order_ori.index == _]
+                df_all['最终订货件数'][df_all['最终订货件数'].index == _] = alr_uni[alr_uni.index == _]
+                df_all['最终周转天数'][df_all['最终周转天数'].index == _] = T_final[T_final.index == _]
 
         else:
             mini = pd.Series(list(set(df['供应商最小起订量（件）'])))[0]
@@ -183,7 +188,10 @@ def opt_baln_order(df_all):
             final_order = final_unit * unit
             print('最优平衡周转天数的精确值:', X, '\n', '该单品所需补货增量的精确值:', '\n', order_delta, '\n',
                   '该单品的最终补货量（即总订货量）：', '\n', final_order, '\n', '该单品的最终补货件数:',  '\n', final_unit, '\n')
-            df_all['计算订货量'][df_all['计算订货量'].index == final_order.index.values[0]] = final_order[final_order.index == final_order.index.values[0]]
+            T_final = (df['当前库存'] + df['在途库存'] + final_order) / df['日均销量']
+            df_all['最终订货量'][df_all['最终订货量'].index == final_order.index.values[0]] = final_order[final_order.index == final_order.index.values[0]]
+            df_all['最终订货件数'][df_all['最终订货件数'].index == final_unit.index.values[0]] = final_unit[final_unit.index == final_unit.index.values[0]]
+            df_all['最终周转天数'][df_all['最终周转天数'].index == T_final.index.values[0]] = T_final[T_final.index == T_final.index.values[0]]
 
     return df_all
 
