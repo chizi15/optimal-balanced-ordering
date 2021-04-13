@@ -7,7 +7,7 @@ warnings.filterwarnings('ignore')
 def opt_baln_order(df_all):
     """
     本函数实现的功能：
-    找到各个供应商下所有单品在当前状态下的最优平衡周转天数，低于该天数的商品一律通过追加补货量的方式拉齐到该平衡周转天数，高于该天数的商品则不动；
+    找到各个供应商下所有单品在当前状态下的最优平衡周转天数，低于该天数的商品一律通过追加补货量的方式拉齐到该平衡周转天数，高于该天数的商品则不变；
     且使各个单品的总补货量为自身件规格的整数倍；且使供应商下所有单品的最终补货件数之和恰好等于该供应商的最小起订件数；
     且尽可能减少最优平衡周转天数的搜索次数，使计算速度加快。
     :param：传入一个或多个供应商的补货相关信息的df，包括的数据维度有['code', 'provider', 'mini-order-unit',
@@ -17,8 +17,8 @@ def opt_baln_order(df_all):
 
     if df_all.isna().any().any():
         raise Exception('原数据中含有空值，请检查')
-    df_all = pd.concat([df_all, pd.DataFrame(columns=list('ABC'))]).fillna(0)
-    df_all.rename(columns={"A": "final-ordering", "B": "final-unit", 'C': 'final-ret-days'}, inplace=True)
+    df_all = pd.concat([df_all, pd.DataFrame(columns=list('ABCD'))]).fillna(0)
+    df_all.rename(columns={"A": "final-ordering", "B": "final-unit", 'C': 'final-ret-days', 'D': 'ret-deviation(%)'}, inplace=True)
     for i in range(len(set(df_all['provider']))):
         df_ori = df_all[df_all['provider'] == list(set(df_all['provider']))[i]]
         df = df_ori.copy()  # 使用copy方法另存一份df，否则df会和df_ori使用同一个存储地址，则更改会同时起作用
@@ -174,10 +174,12 @@ def opt_baln_order(df_all):
                   '该供应商下所有单品的最终补货量：', '\n', order_ori, '\n', '该供应商下所有单品的最终补货件数：', '\n', alr_uni, '\n',
                   '总订货件数:', total_unit, '\n')
             T_final = (df['stock'] + df['arriving'] + order_ori) / df['dms']
+            dev_ratio = (T_final - X) / X * 100
             for _ in order_ori.index:
                 df_all['final-ordering'][df_all['final-ordering'].index == _] = order_ori[order_ori.index == _]
                 df_all['final-unit'][df_all['final-unit'].index == _] = alr_uni[alr_uni.index == _]
                 df_all['final-ret-days'][df_all['final-ret-days'].index == _] = round(T_final[T_final.index == _], 3)
+                df_all['ret-deviation(%)'][df_all['ret-deviation(%)'].index == _] = round(dev_ratio[dev_ratio.index == _], 1)
 
         else:
             mini = pd.Series(list(set(df['mini-order-unit'])))[0]
@@ -200,16 +202,18 @@ def opt_baln_order(df_all):
             print('最优平衡周转天数的精确值:', X, '\n', '该单品所需补货增量的精确值:', '\n', order_delta, '\n',
                   '该单品的最终补货量（即总订货量）：', '\n', final_order, '\n', '该单品的最终补货件数:',  '\n', final_unit, '\n')
             T_final = (df['stock'] + df['arriving'] + final_order) / df['dms']
+            dev_ratio = (T_final - X) / X * 100
             df_all['final-ordering'][df_all['final-ordering'].index == final_order.index.values[0]] = final_order[final_order.index == final_order.index.values[0]]
             df_all['final-unit'][df_all['final-unit'].index == final_unit.index.values[0]] = final_unit[final_unit.index == final_unit.index.values[0]]
             df_all['final-ret-days'][df_all['final-ret-days'].index == T_final.index.values[0]] = round(T_final[T_final.index == T_final.index.values[0]], 3)
+            df_all['ret-deviation(%)'][df_all['ret-deviation(%)'].index == dev_ratio.index.values[0]] = round(dev_ratio[dev_ratio.index == dev_ratio.index.values[0]], 1)
 
     return df_all
 
 
-df_all_ori = pd.read_excel('/Users/zc/Desktop/常规V2.0+deepar/order_balance.xlsx')
+df_all_ori = pd.read_excel('order_balance.xlsx')
 df_all = df_all_ori.copy()
 print('所有供应商的编码：', '\n', set(df_all['provider']), '\n', '供应商总个数：', len(set(df_all['provider'])), '\n',
       '数据维度：', '\n', list(df_all.columns), '\n')
 df_all = opt_baln_order(df_all)
-df_all.to_excel('/Users/zc/Desktop/常规V2.0+deepar/order_balance_final.xlsx')
+df_all.to_excel('order_balance_final.xlsx')
