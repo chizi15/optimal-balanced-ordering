@@ -354,9 +354,9 @@ def opt_baln_order(df_all):
     return df_all
 
 
-df_all_ori = pd.read_excel('C:/Users/admin/Desktop/optimal-balanced-ordering-main/order_balance_all.xlsx')
+df_all_ori = pd.read_excel('/Users/zc/PycharmProjects/functions/order_balance_all.xlsx')
 df_all = df_all_ori.copy()
 print('所有供应商的编码：', '\n', set(df_all['provider']), '\n', '供应商总个数：', len(set(df_all['provider'])), '\n',
       '数据维度：', '\n', list(df_all.columns), '\n')
 df_all = opt_baln_order(df_all)
-df_all.to_excel('C:/Users/admin/Desktop/optimal-balanced-ordering-main/order_balance_final_all.xlsx')
+df_all.to_excel('/Users/zc/PycharmProjects/functions/order_balance_final_all.xlsx')
