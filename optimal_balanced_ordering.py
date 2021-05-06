@@ -1,5 +1,5 @@
-import pandas as pd  # pandas version == 1.2.4
-import numpy as np  # numpy version == 1.20.2
+import pandas as pd
+import numpy as np
 import warnings
 pd.set_option('mode.chained_assignment', None)
 
