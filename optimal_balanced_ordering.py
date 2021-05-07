@@ -34,7 +34,7 @@ def opt_baln_order(df_all):
                 df_all['final-ret-days'][df_all['final-ret-days'].index == _] = \
                     round((df['stock'] + df['arriving'] + df['ordering']) / df['dms'], 3)
             print('provider %s 下的单品无需追加补货，因其已定件数总量不小于最小起订量' % int(list(set(df['provider']))[-1]))
-            continue  # 跳过后续语句，进行下一次"for i in range(len(set(df_all['provider'])))"循环
+            continue  # 跳过后续所有语句，进行下一次"for i in range(len(set(df_all['provider'])))"循环
 
         # 检查各个维度中数据的类型是否正确
         if sum(np.ceil(df['mini-order-unit']) != df['mini-order-unit']) > 0:
@@ -63,7 +63,7 @@ def opt_baln_order(df_all):
         print('\n', '第%s个供应商编码：' % (i + 1), int(list(set(df['provider']))[-1]), '\n', '该供应商下日均销量大于0的单品数：', len(df),
               '\n')
 
-        if len(df) > 1:
+        if len(df) > 1:  # 当有可能参与追加补货的有效单品数的最大值>=2时
             # 周转天数和已定件数是非独立变量，周转天数由（库存 + 在途 + ordering） / dms（向下取整）得到，
             # 已定件数由计算订货量 / 商品件规格（须为整数）得到。其中因为周转天数向下取整，在计算过程中会产生传播误差，
             # 所以公式中不应使用取整后的周转天数，而应使用准确的小数形式周转天数。
@@ -204,6 +204,7 @@ def opt_baln_order(df_all):
                     X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)
 
                     order_delta = (X - T_d) * dms
+
             print('总共搜索 %s 次找到最优平衡周转天数' % (j + k + m), '\n')
 
             if (sum(np.ceil(alr_uni) != alr_uni) > 0) or (sum(df['already-unit'] - alr_uni) != 0):
@@ -218,7 +219,7 @@ def opt_baln_order(df_all):
             # 对于本应用，sum(exact_order / unit)不会精确等于最小订货件数mini的主要原因是，输入的原始数据中"周转天数"是向下取整的，
             # 在计算过程中被省去的小数部分对后续结果的影响就会逐步放大；所以采用重新计算的准确周转天数参与运算，而不是原始数据中向下取整的周转天数。
             # 将靠近ceil且较大的值向上取整，将靠近floor且较小的值向下取整，比全部取floor更利于实际销售。
-            if len(order_delta) == 1:
+            if len(order_delta) == 1:  # 当有可能参与追加补货的有效单品数的最大值>=2，但实际需要追加补货的单品只有一个时
                 exact_unit = order_delta / unit
                 ceil_unit, floor_unit = np.ceil(exact_unit), np.floor(exact_unit)
                 total_unit = exact_unit + sum(alr_uni)
@@ -253,13 +254,14 @@ def opt_baln_order(df_all):
                     df_all['ret-deviation(%)'][df_all['ret-deviation(%)'].index == _] = round(
                         dev_ratio[dev_ratio.index == _], 1)
 
-            else:
+            else:  # 当有可能参与追加补货的有效单品数的最大值>=2，且实际需要追加补货的单品数也>=2时；前者单品数几乎全都大于后者单品数
                 exact_unit = order_delta / unit
                 ceil_unit, floor_unit = np.ceil(exact_unit), np.floor(exact_unit)
                 final_unit = pd.concat([ceil_unit[(ceil_unit - exact_unit) / ceil_unit <= 0.01],
                                         floor_unit[(ceil_unit - exact_unit) / ceil_unit > 0.01]]).sort_index()
                 total_unit = sum(final_unit) + sum(alr_uni)
 
+                # 偏差量补齐
                 if total_unit < mini:
                     # 若final_unit中存在多个最大值，则将所需增量(mini - total_unit)平分增加到每一个最大值索引处
                     final_unit_max = final_unit[final_unit.values == final_unit.max()]
@@ -274,6 +276,7 @@ def opt_baln_order(df_all):
                         final_unit[final_unit.index == _] = final_unit_max[final_unit_max.index == _]
                 trunc_order = final_unit * unit
 
+                # 增加量与原始量相加合并
                 for _ in trunc_order.index:
                     # 需要进行追加补货的各单品的追加补货量trunc_order，加所有单品的初始补货量order_ori，等于所有单品的最终补货量order_ori
                     order_ori[order_ori.index == _] = trunc_order[trunc_order.index == _] + order_ori[
@@ -283,6 +286,7 @@ def opt_baln_order(df_all):
                     # 因为一维数组trunc_order和一维数组order_ori长度不同，会报警"SettingWithCopyWarning:
                     # A value is trying to be set on a copy of a slice from a DataFrame"，但不影响计算。
 
+                # 若存在非整数的订货量，则对其整数化
                 T_final = (df['stock'] + df['arriving'] + order_ori) / df['dms']
                 # 若最终订货件数alr_uni中含有非整数，将周转天数最小的订货件数向上取整，其余向下取整
                 if sum(np.ceil(alr_uni) != alr_uni) > 0:
@@ -291,8 +295,29 @@ def opt_baln_order(df_all):
                     # 上面已经将周转天数最小的订货件数向上取整，并赋值，则alr_uni的小数订货件数商品中已经不存在原周转天数最小的那个商品
                     for _ in T_final[np.ceil(alr_uni) != alr_uni].index:
                         alr_uni[alr_uni.index == _] = np.floor(alr_uni[alr_uni.index == _])
-                    if sum(np.ceil(alr_uni) != alr_uni) > 0:  # 再次检查分配是否正确
+                    order_ori = alr_uni * unit_ori
+
+                    # 参与整数化的单品，若操作之后存在订货件数相同的情况，则可能是它们被近似处理了小数点，
+                    # 此时总订货件数可能不等于最小起订量，则需对其执行进一步的（循环）偏差量分配。
+                    # 若总订货件数不足，则对真实周转天数依次当前最小的单品增加一个补货件数，直至相等；
+                    # 若总订货件数超量，则对真实周转天数依次当前最大的单品减小一个补货件数，直至相等。
+                    while sum(alr_uni) + 1 <= mini:
+                        T_final = (df['stock'] + df['arriving'] + order_ori) / df['dms']
+                        alr_uni[T_final == T_final[trunc_order.index].min()] += 1
+                        order_ori = alr_uni * unit_ori
+                    while sum(alr_uni) - 1 >= mini:
+                        T_final = (df['stock'] + df['arriving'] + order_ori) / df['dms']
+                        alr_uni[T_final == T_final[trunc_order.index].max()] -= 1
+                        order_ori = alr_uni * unit_ori
+
+                    if sum(np.ceil(alr_uni) != alr_uni) > 0:  # 再次检查分配后是否含有非整数的最终订货件数
                         raise Exception('最终订货件数alr_uni中含有非整数')
+
+                    T_final = (df['stock'] + df['arriving'] + order_ori) / df['dms']  # 因为order_ori必定有更新，所以T_final一定要更新
+
+                if sum(alr_uni) != mini:  # 再次检查分配后的最终订货件数是否等于最小起订量
+                    raise Exception(
+                        '供应商 %s 最终总订货件数 %s 不等于最小起订量 %s' % (int(list(set(df['provider']))[-1]), sum(alr_uni), mini))
 
                 dev_ratio = (T_final - X) / X * 100
                 for _ in order_ori.index:
@@ -303,15 +328,12 @@ def opt_baln_order(df_all):
                     df_all['ret-deviation(%)'][df_all['ret-deviation(%)'].index == _] = round(
                         dev_ratio[dev_ratio.index == _], 1)
 
-                if sum(alr_uni) != mini:
-                    raise Exception(
-                        '供应商 %s 最终总订货件数 %s 不等于最小起订量 %s' % (int(list(set(df['provider']))[-1]), sum(alr_uni), mini))
                 print('最优平衡周转天数的精确值:', X, '\n', '未补货单品中，周转天数小于最优平衡周转天数的个数:', len(T_u[T_u < X]), '\n',
                       '进行补货量追加的单品，所需增量的精确值:', '\n', order_delta, '\n', '进行补货量追加的单品，追加的搜整订货件数:', '\n', final_unit, '\n',
                       '该供应商下所有单品的最终补货量：', '\n', order_ori, '\n', '该供应商下所有单品的最终订货件数：', '\n', alr_uni, '\n',
                       '总订货件数:', sum(alr_uni), '\n')
 
-        else:
+        else:  # 当有可能参与追加补货的有效单品数至多为1时
             mini = pd.Series(list(set(df['mini-order-unit'])))[0]
             unit = np.longdouble(df['unit'])
             stock, arri, order, dms = df['stock'], df['arriving'], df['ordering'], df['dms']
@@ -351,12 +373,16 @@ def opt_baln_order(df_all):
                 dev_ratio[dev_ratio.index == dev_ratio.index.values[0]], 1)
         print('供应商 %s 下所有单品平衡补货完毕' % int(list(set(df['provider']))[-1]), '\n')
 
+    check = df_all['final-ordering'] / df_all['unit'] != df_all['final-unit']
+    if sum(check) > 0:
+        raise Exception('对于供应商 %s ，存在 \"最终订货量\" 除以 \"件规格\" 不等于 \"最终订货件数\" 的情况' % set(df_all['provider'][check].values))
+
     return df_all
 
 
-df_all_ori = pd.read_excel('/Users/zc/PycharmProjects/functions/order_balance_all.xlsx')
+df_all_ori = pd.read_excel('C:/Users/admin/Desktop/functions/order_balance_all.xlsx')
 df_all = df_all_ori.copy()
 print('所有供应商的编码：', '\n', set(df_all['provider']), '\n', '供应商总个数：', len(set(df_all['provider'])), '\n',
       '数据维度：', '\n', list(df_all.columns), '\n')
 df_all = opt_baln_order(df_all)
-df_all.to_excel('/Users/zc/PycharmProjects/functions/order_balance_final_all.xlsx')
+df_all.to_excel('C:/Users/admin/Desktop/functions/order_balance_all_output.xlsx')
