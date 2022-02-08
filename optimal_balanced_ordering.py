@@ -4,6 +4,23 @@ import warnings
 pd.set_option('mode.chained_assignment', None)
 
 
+def print_execute_time(func):
+    from time import time
+    # 定义嵌套函数，用来打印出装饰的函数的执行时间
+    def wrapper(*args, **kwargs):
+        # 定义开始时间和结束时间，将func夹在中间执行，取得其返回值
+        start = time()
+        func_return = func(*args, **kwargs)
+        end = time()
+        # 打印方法名称和其执行时间
+        print(f'{func.__name__}() execute time: {end - start}s')
+        # 返回func的返回值
+        return func_return
+
+    # 返回嵌套的内层函数
+    return wrapper
+
+@print_execute_time
 def opt_baln_order(df_all):
     """
     本函数实现的功能：
@@ -103,11 +120,14 @@ def opt_baln_order(df_all):
 
             order_delta = (X - T_d) * dms  # 各单品所需增加补货的数量的精确值，series of longdouble
 
+            golden_ratio = 2 / (1+np.sqrt(5))
             j, k, m = 0, 0, 0
             while sum(order_delta < 0) > 0:
                 j += 1
-                print('补货量增量不能为负，应当降低critic取值；这是第 %s 次向下二分搜索最优平衡周转天数' % j)
-                critic = critic / 2  # 用二分法向下搜索最优临界值
+                # print('补货量增量不能为负，应当降低critic取值；这是第 %s 次向下二分搜索最优平衡周转天数' % j)
+                # critic = critic / 2  # 用二分法向下搜索最优临界值
+                print('补货量增量不能为负，应当降低critic取值；这是第 %s 次向下黄金分割搜索最优平衡周转天数' % j)
+                critic = critic * (1-golden_ratio)  # 用黄金分割向下搜索最优临界值
                 T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / df[T > critic][
                     'dms']
                 df_trunc = df[T <= critic]
@@ -180,8 +200,10 @@ def opt_baln_order(df_all):
 
                 while len(T_u[T_u <= X]) > 0:
                     k += 1
-                    print('critic取值过小，筛选掉过多单品，使最优平衡周转天数过大，应增加critic取值；这是第%s次向上二分搜索最优平衡周转天数' % k)
-                    critic = critic * 1.5  # 用二分法向上搜索最优临界值
+                    # print('critic取值过小，筛选掉过多单品，使最优平衡周转天数过大，应增加critic取值；这是第%s次向上二分搜索最优平衡周转天数' % k)
+                    # critic = critic * 1.5  # 用二分法向上搜索最优临界值
+                    print('critic取值过小，筛选掉过多单品，使最优平衡周转天数过大，应增加critic取值；这是第%s次向上黄金分割搜索最优平衡周转天数' % k)
+                    critic = critic * 2  # 用黄金分割向上搜索最优临界值；因为向上黄金分割搜索时，前一个基准点为后一个搜索点的中点，所以乘2即可
                     T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / \
                           df[T > critic]['dms']
                     df_trunc = df[T <= critic]
@@ -380,9 +402,9 @@ def opt_baln_order(df_all):
     return df_all
 
 
-df_all_ori = pd.read_excel('C:/Users/admin/Desktop/functions/order_balance_all.xlsx')
+df_all_ori = pd.read_excel('G:/coding/functions/order_balance_all.xlsx')
 df_all = df_all_ori.copy()
 print('所有供应商的编码：', '\n', set(df_all['provider']), '\n', '供应商总个数：', len(set(df_all['provider'])), '\n',
       '数据维度：', '\n', list(df_all.columns), '\n')
 df_all = opt_baln_order(df_all)
-df_all.to_excel('C:/Users/admin/Desktop/functions/order_balance_all_output.xlsx')
+df_all.to_excel('G:/coding/functions/order_balance_all_output.xlsx')
