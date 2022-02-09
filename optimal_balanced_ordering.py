@@ -5,23 +5,22 @@ pd.set_option('mode.chained_assignment', None)
 
 
 def print_execute_time(func):
-    from time import time
+    from time import process_time
     # 定义嵌套函数，用来打印出装饰的函数的执行时间
     def wrapper(*args, **kwargs):
         # 定义开始时间和结束时间，将func夹在中间执行，取得其返回值
-        start = time()
+        start = process_time()
         func_return = func(*args, **kwargs)
-        end = time()
+        end = process_time()
         # 打印方法名称和其执行时间
         print(f'{func.__name__}() execute time: {end - start}s')
         # 返回func的返回值
         return func_return
-
     # 返回嵌套的内层函数
     return wrapper
 
 @print_execute_time
-def opt_baln_order(df_all):
+def opt_baln_order(df_all, search_type='golden'):
     """
     本函数实现的功能：
     找到各个供应商下所有单品在当前状态下的最优平衡周转天数，低于该天数的商品一律通过追加补货量的方式拉齐到该平衡周转天数，高于该天数的商品则不变；
@@ -29,9 +28,15 @@ def opt_baln_order(df_all):
     且尽可能减少最优平衡周转天数的搜索次数，使计算速度加快。
     :param：传入一个或多个供应商的补货相关信息的df，包括的数据维度有['code', 'provider', 'mini-order-unit',
     'unit', 'stock', 'arriving', 'ordering', 'dms', 'retention-days', 'already-unit']。
+    search_type: 分割搜索时采用的方法，二分搜索
     :return：返回一个或多个供应商的最终补货信息的df，在传入的df_all的基础上，增加了['final-ordering', 'final-unit',
     'final-ret-days', 'ret-deviation(%)']四个维度。
     """
+
+    search_type = 'golden'  #  'golden' or 'bisection'
+    golden_ratio = 2 / (1 + np.sqrt(5))
+    # 记录对于参与追加补货的有效单品数>=2的供应商，三部分搜索的总次数
+    section_search_upsteps, section_search_downsteps, sequence_search_steps = 0, 0, 0
 
     if df_all.isna().any().any():
         raise Exception('原数据中含有空值，可能是‘retention-days’列在某些行为空，因为此时该行对应dms为0，使周转天数为无穷大')
@@ -84,6 +89,7 @@ def opt_baln_order(df_all):
             # 周转天数和已定件数是非独立变量，周转天数由（库存 + 在途 + ordering） / dms（向下取整）得到，
             # 已定件数由计算订货量 / 商品件规格（须为整数）得到。其中因为周转天数向下取整，在计算过程中会产生传播误差，
             # 所以公式中不应使用取整后的周转天数，而应使用准确的小数形式周转天数。
+
             order_ori, T_ori, unit_ori = df['ordering'], df['retention-days'], df['unit']
             T = (df['stock'] + df['arriving'] + order_ori) / df['dms']  # 第一次未截断前，各商品的精确周转天数
             if sum(T - T_ori >= 1) > 0:
@@ -120,31 +126,200 @@ def opt_baln_order(df_all):
 
             order_delta = (X - T_d) * dms  # 各单品所需增加补货的数量的精确值，series of longdouble
 
-            golden_ratio = 2 / (1+np.sqrt(5))
-            j, k, m = 0, 0, 0
-            while sum(order_delta < 0) > 0:
-                j += 1
-                # print('补货量增量不能为负，应当降低critic取值；这是第 %s 次向下二分搜索最优平衡周转天数' % j)
-                # critic = critic / 2  # 用二分法向下搜索最优临界值
-                print('补货量增量不能为负，应当降低critic取值；这是第 %s 次向下黄金分割搜索最优平衡周转天数' % j)
-                critic = critic * (1-golden_ratio)  # 用黄金分割向下搜索最优临界值
-                T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / df[T > critic][
-                    'dms']
-                df_trunc = df[T <= critic]
-                unit = np.longdouble(df_trunc['unit'])
-                stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], df_trunc['dms']
-                T_d = (stock + arri + order) / dms
+            if search_type == 'golden':
+                j, k, m = 0, 0, 0  # j是向下黄金分割搜索的次数，k是向上黄金分割搜索的次数，m是顺序搜索的次数
+                while sum(order_delta < 0) > 0:
+                    j += 1
+                    print('补货量增量不能为负，应当降低critic取值；这是第 %s 次向下黄金分割搜索最优平衡周转天数' % j)
+                    critic = critic * (1-golden_ratio)  # 用黄金分割向下搜索最优临界值
+                    T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / df[T > critic][
+                        'dms']
+                    df_trunc = df[T <= critic]
+                    unit = np.longdouble(df_trunc['unit'])
+                    stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], df_trunc['dms']
+                    T_d = (stock + arri + order) / dms
 
-                if len(df_trunc) < 2:  # 上下二分搜索已不能找到最优平衡周转天数，改用顺序搜索重头开始
-                    # T_des = T.sort_values(ascending=False, ignore_index=True)  # 高版本pandas才支持ignore_index参数
-                    T_des = pd.Series(T.sort_values(ascending=False).values)
-                    for i in range(len(T_des)):
-                        m += 1
-                        print('上下二分搜索终止，不能找到最优周转天数，改为顺序重头搜索；这是第 %s 次顺序搜索最优平衡周转天数' % m)
-                        critic = T_des[i]
+                    if len(df_trunc) < 2:  # 上下黄金分割搜索已不能找到最优平衡周转天数，改用顺序搜索重头开始
+                        # T_des = T.sort_values(ascending=False, ignore_index=True)  # 高版本pandas才支持ignore_index参数
+                        T_des = pd.Series(T.sort_values(ascending=False).values)
+                        for i in range(len(T_des)):
+                            m += 1
+                            print('上下黄金分割搜索终止，不能找到最优周转天数，改为顺序重头搜索；这是第 %s 次顺序搜索最优平衡周转天数' % m)
+                            critic = T_des[i]
+                            T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / \
+                                  df[T > critic][
+                                      'dms']
+                            df_trunc = df[T <= critic]
+                            unit = np.longdouble(df_trunc['unit'])
+                            stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], \
+                                                      df_trunc[
+                                                          'dms']
+                            T_d = (stock + arri + order) / dms
+
+                            if len(df_trunc) == 1:
+                                print('顺序搜索时，截断后只剩一个单品，改用单一商品算法')
+                                mini = pd.Series(list(set(df_trunc['mini-order-unit'])))[0]
+                                unit = np.longdouble(df_trunc['unit'])
+                                stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], \
+                                                          df_trunc['dms']
+                                T = (stock + arri + order) / dms
+                                X = (((mini - sum(alr_uni)) * unit + stock + arri + order) / dms).values[0]
+                                order_delta = (X - T) * dms
+                                break  # 退出“for i in range(len(T_des))”
+
+                            else:
+                                A = stock + arri + order
+                                B = []
+                                for _ in range(len(unit)):
+                                    unit_m = np.ma.array(unit, mask=False)
+                                    unit_m.mask[_] = True
+                                    B.append(unit_m.prod())
+                                B = np.array(B)  # array of longdouble
+                                pai_unit = unit.prod()
+                                C = (mini - sum(alr_uni)) * pai_unit  # longdouble
+                                X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)
+                                order_delta = (X - T_d) * dms
+                                if (sum(order_delta >= 0) == len(order_delta)) and (len(T_u[T_u > X]) == len(T_u)) and (
+                                        len(T_u) != 0):
+                                    break  # 退出当前“for i in range(len(T_des))”
+                        break  # 退出外层“while sum(order_delta < 0) > 0”
+
+                    else:
+                        A = stock + arri + order  # 数量, series
+                        B = []
+                        for _ in range(len(unit)):
+                            unit_m = np.ma.array(unit, mask=False)
+                            unit_m.mask[_] = True
+                            B.append(unit_m.prod())
+                        B = np.array(B)  # array of longdouble
+                        pai_unit = unit.prod()
+                        if not (sum(pai_unit / B - unit) < 1e-10):
+                            raise Exception('向下黄金分割搜索时连乘项B[i]计算有误，可能是unit数据类型的精度不够')
+                        C = (mini - sum(alr_uni)) * pai_unit  # longdouble
+                        X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)  # X是最优平衡周转天数的精确值，longdouble
+
+                    order_delta = (X - T_d) * dms  # 各单品所需增加补货的数量的精确值，series of longdouble
+                    # 由于df_trunc = df[T <= critic]，(X - T_d)可以保证始终为正，及始终只对小于平衡周转天数的那些单品追加补货，
+                    # 而不会对大于平衡周转天数的那些单品削减补货。
+
+                    while len(T_u[T_u <= X]) > 0:
+                        k += 1
+                        print('critic取值过小，筛选掉过多单品，使最优平衡周转天数过大，应增加critic取值；这是第%s次向上黄金分割搜索最优平衡周转天数' % k)
+                        critic = critic * 2  # 用黄金分割向上搜索最优临界值，因为前一个基准点是下一个搜索点的中点，所以乘2即可。
                         T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / \
-                              df[T > critic][
-                                  'dms']
+                              df[T > critic]['dms']
+                        df_trunc = df[T <= critic]
+                        unit = np.longdouble(df_trunc['unit'])
+                        stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], df_trunc[
+                            'dms']
+                        T_d = (stock + arri + order) / dms
+
+                        A = stock + arri + order  # 数量, series
+                        B = []
+                        for _ in range(len(unit)):
+                            unit_m = np.ma.array(unit, mask=False)
+                            unit_m.mask[_] = True
+                            B.append(unit_m.prod())
+                        B = np.array(B)  # array of longdouble
+                        pai_unit = unit.prod()
+                        if not (sum(pai_unit / B - unit) < 1e-10):
+                            raise Exception('向上黄金分割搜索时连乘项B[i]计算有误，可能是unit数据类型的精度不够')
+                        C = (mini - sum(alr_uni)) * pai_unit  # longdouble
+                        X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)
+
+                        order_delta = (X - T_d) * dms
+
+                print('总共搜索 %s 次找到最优平衡周转天数' % (j + k + m), '\n')
+                section_search_downsteps += j
+                section_search_upsteps += k
+                sequence_search_steps += m
+
+            else:
+                j, k, m = 0, 0, 0  # j是向下二分搜索的次数，k是向上二分搜索的次数，m是顺序搜索的次数
+                while sum(order_delta < 0) > 0:
+                    j += 1
+                    print('补货量增量不能为负，应当降低critic取值；这是第 %s 次向下二分搜索最优平衡周转天数' % j)
+                    critic = critic * 1/2  # 用二分法向下搜索最优临界值
+                    T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / \
+                          df[T > critic][
+                              'dms']
+                    df_trunc = df[T <= critic]
+                    unit = np.longdouble(df_trunc['unit'])
+                    stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], \
+                                              df_trunc['dms']
+                    T_d = (stock + arri + order) / dms
+
+                    if len(df_trunc) < 2:  # 上下二分搜索已不能找到最优平衡周转天数，改用顺序搜索重头开始
+                        # T_des = T.sort_values(ascending=False, ignore_index=True)  # 高版本pandas才支持ignore_index参数
+                        T_des = pd.Series(T.sort_values(ascending=False).values)
+                        for i in range(len(T_des)):
+                            m += 1
+                            print('上下二分搜索终止，不能找到最优周转天数，改为顺序重头搜索；这是第 %s 次顺序搜索最优平衡周转天数' % m)
+                            critic = T_des[i]
+                            T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / \
+                                  df[T > critic][
+                                      'dms']
+                            df_trunc = df[T <= critic]
+                            unit = np.longdouble(df_trunc['unit'])
+                            stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], \
+                                                      df_trunc[
+                                                          'dms']
+                            T_d = (stock + arri + order) / dms
+
+                            if len(df_trunc) == 1:
+                                print('顺序搜索时，截断后只剩一个单品，改用单一商品算法')
+                                mini = pd.Series(list(set(df_trunc['mini-order-unit'])))[0]
+                                unit = np.longdouble(df_trunc['unit'])
+                                stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc[
+                                    'ordering'], \
+                                                          df_trunc['dms']
+                                T = (stock + arri + order) / dms
+                                X = (((mini - sum(alr_uni)) * unit + stock + arri + order) / dms).values[0]
+                                order_delta = (X - T) * dms
+                                break  # 退出“for i in range(len(T_des))”
+
+                            else:
+                                A = stock + arri + order
+                                B = []
+                                for _ in range(len(unit)):
+                                    unit_m = np.ma.array(unit, mask=False)
+                                    unit_m.mask[_] = True
+                                    B.append(unit_m.prod())
+                                B = np.array(B)  # array of longdouble
+                                pai_unit = unit.prod()
+                                C = (mini - sum(alr_uni)) * pai_unit  # longdouble
+                                X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)
+                                order_delta = (X - T_d) * dms
+                                if (sum(order_delta >= 0) == len(order_delta)) and (
+                                        len(T_u[T_u > X]) == len(T_u)) and (
+                                        len(T_u) != 0):
+                                    break  # 退出当前“for i in range(len(T_des))”
+                        break  # 退出外层“while sum(order_delta < 0) > 0”
+
+                    else:
+                        A = stock + arri + order  # 数量, series
+                        B = []
+                        for _ in range(len(unit)):
+                            unit_m = np.ma.array(unit, mask=False)
+                            unit_m.mask[_] = True
+                            B.append(unit_m.prod())
+                        B = np.array(B)  # array of longdouble
+                        pai_unit = unit.prod()
+                        if not (sum(pai_unit / B - unit) < 1e-10):
+                            raise Exception('向下二分搜索时连乘项B[i]计算有误，可能是unit数据类型的精度不够')
+                        C = (mini - sum(alr_uni)) * pai_unit  # longdouble
+                        X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)  # X是最优平衡周转天数的精确值，longdouble
+
+                    order_delta = (X - T_d) * dms  # 各单品所需增加补货的数量的精确值，series of longdouble
+                    # 由于df_trunc = df[T <= critic]，(X - T_d)可以保证始终为正，及始终只对小于平衡周转天数的那些单品追加补货，
+                    # 而不会对大于平衡周转天数的那些单品削减补货。
+
+                    while len(T_u[T_u <= X]) > 0:
+                        k += 1
+                        print('critic取值过小，筛选掉过多单品，使最优平衡周转天数过大，应增加critic取值；这是第%s次向上二分搜索最优平衡周转天数' % k)
+                        critic = critic * 1.5  # 用二分法向上搜索最优临界值
+                        T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / \
+                              df[T > critic]['dms']
                         df_trunc = df[T <= critic]
                         unit = np.longdouble(df_trunc['unit'])
                         stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], \
@@ -152,82 +327,25 @@ def opt_baln_order(df_all):
                                                       'dms']
                         T_d = (stock + arri + order) / dms
 
-                        if len(df_trunc) == 1:
-                            print('顺序搜索时，截断后只剩一个单品，改用单一商品算法')
-                            mini = pd.Series(list(set(df_trunc['mini-order-unit'])))[0]
-                            unit = np.longdouble(df_trunc['unit'])
-                            stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], \
-                                                      df_trunc['dms']
-                            T = (stock + arri + order) / dms
-                            X = (((mini - sum(alr_uni)) * unit + stock + arri + order) / dms).values[0]
-                            order_delta = (X - T) * dms
-                            break  # 退出“for i in range(len(T_des))”
+                        A = stock + arri + order  # 数量, series
+                        B = []
+                        for _ in range(len(unit)):
+                            unit_m = np.ma.array(unit, mask=False)
+                            unit_m.mask[_] = True
+                            B.append(unit_m.prod())
+                        B = np.array(B)  # array of longdouble
+                        pai_unit = unit.prod()
+                        if not (sum(pai_unit / B - unit) < 1e-10):
+                            raise Exception('向上二分搜索时连乘项B[i]计算有误，可能是unit数据类型的精度不够')
+                        C = (mini - sum(alr_uni)) * pai_unit  # longdouble
+                        X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)
 
-                        else:
-                            A = stock + arri + order
-                            B = []
-                            for _ in range(len(unit)):
-                                unit_m = np.ma.array(unit, mask=False)
-                                unit_m.mask[_] = True
-                                B.append(unit_m.prod())
-                            B = np.array(B)  # array of longdouble
-                            pai_unit = unit.prod()
-                            C = (mini - sum(alr_uni)) * pai_unit  # longdouble
-                            X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)
-                            order_delta = (X - T_d) * dms
-                            if (sum(order_delta >= 0) == len(order_delta)) and (len(T_u[T_u > X]) == len(T_u)) and (
-                                    len(T_u) != 0):
-                                break  # 退出当前“for i in range(len(T_des))”
-                    break  # 退出外层“while sum(order_delta < 0) > 0”
+                        order_delta = (X - T_d) * dms
 
-                else:
-                    A = stock + arri + order  # 数量, series
-                    B = []
-                    for _ in range(len(unit)):
-                        unit_m = np.ma.array(unit, mask=False)
-                        unit_m.mask[_] = True
-                        B.append(unit_m.prod())
-                    B = np.array(B)  # array of longdouble
-                    pai_unit = unit.prod()
-                    if not (sum(pai_unit / B - unit) < 1e-10):
-                        raise Exception('向下二分搜索时连乘项B[i]计算有误，可能是unit数据类型的精度不够')
-                    C = (mini - sum(alr_uni)) * pai_unit  # longdouble
-                    X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)  # X是最优平衡周转天数的精确值，longdouble
-
-                order_delta = (X - T_d) * dms  # 各单品所需增加补货的数量的精确值，series of longdouble
-                # 由于df_trunc = df[T <= critic]，(X - T_d)可以保证始终为正，及始终只对小于平衡周转天数的那些单品追加补货，
-                # 而不会对大于平衡周转天数的那些单品削减补货。
-
-                while len(T_u[T_u <= X]) > 0:
-                    k += 1
-                    # print('critic取值过小，筛选掉过多单品，使最优平衡周转天数过大，应增加critic取值；这是第%s次向上二分搜索最优平衡周转天数' % k)
-                    # critic = critic * 1.5  # 用二分法向上搜索最优临界值
-                    print('critic取值过小，筛选掉过多单品，使最优平衡周转天数过大，应增加critic取值；这是第%s次向上黄金分割搜索最优平衡周转天数' % k)
-                    critic = critic * 2  # 用黄金分割向上搜索最优临界值；因为向上黄金分割搜索时，前一个基准点为后一个搜索点的中点，所以乘2即可
-                    T_u = (df[T > critic]['stock'] + df[T > critic]['arriving'] + order_ori[T > critic]) / \
-                          df[T > critic]['dms']
-                    df_trunc = df[T <= critic]
-                    unit = np.longdouble(df_trunc['unit'])
-                    stock, arri, order, dms = df_trunc['stock'], df_trunc['arriving'], df_trunc['ordering'], df_trunc[
-                        'dms']
-                    T_d = (stock + arri + order) / dms
-
-                    A = stock + arri + order  # 数量, series
-                    B = []
-                    for _ in range(len(unit)):
-                        unit_m = np.ma.array(unit, mask=False)
-                        unit_m.mask[_] = True
-                        B.append(unit_m.prod())
-                    B = np.array(B)  # array of longdouble
-                    pai_unit = unit.prod()
-                    if not (sum(pai_unit / B - unit) < 1e-10):
-                        raise Exception('向上二分搜索时连乘项B[i]计算有误，可能是unit数据类型的精度不够')
-                    C = (mini - sum(alr_uni)) * pai_unit  # longdouble
-                    X = (C + np.dot(np.array(A), B)) / np.dot(np.array(dms), B)
-
-                    order_delta = (X - T_d) * dms
-
-            print('总共搜索 %s 次找到最优平衡周转天数' % (j + k + m), '\n')
+                print('总共搜索 %s 次找到最优平衡周转天数' % (j + k + m), '\n')
+                section_search_downsteps += j
+                section_search_upsteps += k
+                sequence_search_steps += m
 
             if (sum(np.ceil(alr_uni) != alr_uni) > 0) or (sum(df['already-unit'] - alr_uni) != 0):
                 print('\n', '供应商 %s 中存在初始订货量不是件规格的整数倍，或初始已定件数不是整数的情况' % int(list(set(df['provider']))[-1]), '\n')
@@ -395,6 +513,7 @@ def opt_baln_order(df_all):
                 dev_ratio[dev_ratio.index == dev_ratio.index.values[0]], 1)
         print('供应商 %s 下所有单品平衡补货完毕' % int(list(set(df['provider']))[-1]), '\n')
 
+    print(f'对于参与追加补货的有效单品数>=2的供应商，向下{search_type}搜索总次数为{section_search_downsteps}，向上{search_type}搜索总次数为{section_search_upsteps}，顺序搜索总次数为{sequence_search_steps}')
     check = df_all['final-ordering'] / df_all['unit'] != df_all['final-unit']
     if sum(check) > 0:
         raise Exception('对于供应商 %s ，存在 \"最终订货量\" 除以 \"件规格\" 不等于 \"最终订货件数\" 的情况' % set(df_all['provider'][check].values))
@@ -402,9 +521,9 @@ def opt_baln_order(df_all):
     return df_all
 
 
-df_all_ori = pd.read_excel('G:/coding/functions/order_balance_all.xlsx')
+df_all_ori = pd.read_excel('/Users/ZC/PycharmProjects/PythonProjectProf/functions/order_balance_all.xlsx')
 df_all = df_all_ori.copy()
 print('所有供应商的编码：', '\n', set(df_all['provider']), '\n', '供应商总个数：', len(set(df_all['provider'])), '\n',
       '数据维度：', '\n', list(df_all.columns), '\n')
 df_all = opt_baln_order(df_all)
-df_all.to_excel('G:/coding/functions/order_balance_all_output.xlsx')
+df_all.to_excel('/Users/ZC/PycharmProjects/PythonProjectProf/functions/order_balance_final_all.xlsx')
